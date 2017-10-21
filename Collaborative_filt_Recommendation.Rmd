@@ -1,0 +1,257 @@
+---
+title: "Preliminary Analysis"
+author: "Srilekha Lava"
+output:
+  pdf_document:
+    toc: yes
+  html_notebook:
+    toc: yes
+---
+
+# Events data analysis
+
+```{r}
+
+events <- read.csv('E:/Kaggle/Customer_Behavior/events.csv',header=TRUE)
+attach(events)
+# # of Visitors per event
+aggregate(formula = visitorid ~ event,data = events, FUN =length)
+
+# # of NAs per column
+sapply(events,function(x) sum(is.na(x)))
+
+# unique # of visitors - 1,407,580
+length(unique(visitorid))
+
+# Unique # of items -- 235,061
+length(unique(itemid))
+
+# Top purchased products
+ tab <- as.data.frame(sort((table(events[event == 'transaction','itemid'])),decreasing = TRUE))
+ # Totally 12,025 items were bought and 461686 itemid was the most purchased item
+ 
+ # Visitors with View event - Total 2,664,312 
+view <- events[events$event == 'view', ]
+# 1,404,179 unique visitors viewed 234,838 unique items 
+length(unique(view$visitorid))
+length(unique(view$itemid))
+ 
+# Visitors with Add to cart event - Total 69,332
+addtocart <- events[events$event == 'addtocart', ]
+# 37,722 unique visitors added 23,903 unique items to the cart with varying quantity
+length(unique(addtocart$visitorid))
+length(unique(addtocart$itemid))
+
+# Visitors with Transaction event - Total 22,457
+transact <- events[events$event == 'transaction', ]
+# 11,719 unique visitors bought 12,025 unique items
+length(unique(transact$visitorid))
+length(unique(transact$itemid))
+
+# Visitors with "view" and "add to cart" event
+view_cart <- merge(x = view, y = addtocart,
+                       by.x = "visitorid",
+                       by.y = "visitorid",
+                       all = FALSE)
+# Of 1,404,179, only 34,401 visitors added the items to cart after viewing
+length(unique(view_cart$visitorid))
+
+
+# Visitors with "add to cart" and "transaction" event
+cart_transact <- merge(x = addtocart, y = transact,
+                       by.x = "visitorid",
+                       by.y = "visitorid",
+                       all = FALSE)
+# Of 37,772 visitors only 10,576 visitors made a transaction after adding the items to cart
+length(unique(cart_transact$visitorid))
+
+
+# Visitors with "view" and "transaction" event
+view_transact <- merge(x = view, y = transact,
+                       by.x = "visitorid",
+                       by.y = "visitorid",
+                       all = FALSE)
+# Of 1,404,179 visitors only 11,291 visitors made a transaction after viewing the items
+length(unique(view_transact$visitorid))
+
+
+# Visitors who have viewed, added to cart and transacted the items
+view_cart_transact <- merge(x = data.frame(visitorid = unique( view[,2])),
+                            y=data.frame(visitorid = unique(cart_transact[,1])),
+                            by.x = "visitorid",
+                            by.y = "visitorid",
+                            all = FALSE)
+# Only 10,228 visitors have viewed, added to cart and bought the item
+
+# Time period - 12.38 years
+(max(events$timestamp) - min(events$timestamp)) / (60 *60 * 24*30.5*365.5)
+```
+
+
+
+# Category_Tree data analysis
+
+```{r}
+cat_tree <- read.csv('E:/Kaggle/Customer_Behavior/category_tree.csv',header=TRUE)
+
+# No duplicates - Totally 1,669 categoryid
+length(cat_tree$categoryid)
+length(unique(cat_tree$categoryid))
+
+# # of categoryids with no parentid -> 25
+nrow(cat_tree[is.na(cat_tree$parentid)==TRUE,]) 
+
+# parent_ids with respective count of categories
+freq_table <-aggregate(categoryid ~ parentid,data=cat_tree,FUN=length )
+freq_table <- freq_table[order(freq_table[2],decreasing=TRUE),]
+
+```
+
+
+
+# Itemproperties data analysis
+```{r}
+item_prop_1 <- read.csv('E:/Kaggle/Customer_Behavior/item_properties_part1.csv',header=TRUE)
+item_prop_2 <- read.csv('E:/Kaggle/Customer_Behavior/item_properties_part2.csv',header=TRUE)
+item_prop <- rbind(item_prop_1,item_prop_2)
+
+# Unique # of item_id --- 417,053
+length(unique(item_prop$itemid))
+
+# Unique # of properties -- 1104
+length(unique(item_prop$property))
+
+
+```
+
+
+
+# Training Item - Based Collaborative Filtering on viewed and cart items
+
+```{r}
+# For easier implementation we will consider only the visitors who viewed, added to cart and bought the item 
+final_train <- events[events$visitorid %in% view_cart_transact$visitorid & events$event %in% c("view","addtocart"), ]
+
+# Taking a sample of 100 visitors
+set.seed(300)
+visitor_sample <- sample(unique(final_train$visitorid),100)
+final_sample_train <- final_train[final_train$visitorid %in% visitor_sample == TRUE, ]
+
+# Building Contingency table for obtaining frequencies of items per visitor
+cont_table_train<-table(droplevels(as.factor(final_sample_train$visitorid)),droplevels(as.factor(final_sample_train$itemid)))
+cont_table_train <- as.data.frame.matrix(cont_table_train)
+
+
+# Determining cosine similarity between the viewed items
+cosine <- function(a,b){
+  cos_sim <- sum(as.double(a * b)) / (sqrt(sum(as.double(a*a))) *  sqrt(sum(as.double(b*b))))
+  return(cos_sim)
+}
+
+
+# Constructing cosine similarity matrix 
+similarity_matix_train <- matrix(data = 0, nrow = ncol(cont_table_train),ncol = ncol(cont_table_train),dimnames = list(x = colnames(cont_table_train), y = colnames(cont_table_train) ) )
+
+for (i in 1:ncol(cont_table_train)){
+  for (j in 1:ncol(cont_table_train)){
+    similarity_matix_train[i,j] <- cosine (as.matrix(cont_table_train[i]),as.matrix(cont_table_train[j]))
+  }
+}
+
+similarity_matix_train_df <- as.data.frame(similarity_matix_train)
+
+
+# Determining the top 10 similar items for every item
+similar_prop_train <- matrix(NA,nrow = ncol(cont_table_train),ncol = 11, dimnames = list(x = colnames(cont_table_train), y =1:11))
+for (i in 1:nrow(similarity_matix_train_df)){
+  similar_prop_train[i,] <-head(rownames(similarity_matix_train_df[order(similarity_matix_train_df[i],decreasing = TRUE),]),n=11)
+}
+similar_prop_train_df <- as.data.frame(similar_prop_train)
+
+
+
+# Constructing a single table for viewed and items in  cart
+sample_view_cart <- final_sample_train[order(final_sample_train[2],final_sample_train[1]),]
+cart_items <- sample_view_cart[sample_view_cart$event == "addtocart", c(1,2,4)]
+cart_items_agg <- aggregate(itemid ~ visitorid,data = cart_items,function(x) list(unique(x)))
+view_items_agg <- aggregate(itemid ~ visitorid,data = final_sample_train,function(x) list(unique(x)))
+view_cart_items <- cbind(cart_items_agg[1:2],view_items_agg[2])
+colnames(view_cart_items)[2:3] <- c("cart_items","viewed_items")
+ 
+
+# Calculating number of recommended items in CART
+
+for (i in 1:nrow(view_cart_items)){
+  for (j in 1:length(view_cart_items[i,3])){
+    item <- as.character(unlist(view_cart_items[i,3][j]))
+    l <- as.numeric(unlist(view_cart_items[i,2]))
+    r <- as.vector(as.matrix(similar_prop_train_df[item,1:11 ]))
+    match <- l  %in% r 
+    cnt <- sum(match)
+    if (cnt>0 ){ view_cart_items[i,4] <- cnt
+    } else view_cart_items[i,4] <- 0
+  }
+}
+
+view_cart_items <- view_cart_items[order(view_cart_items[4],decreasing = TRUE),]
+
+for (i in 1:nrow(view_cart_items)){
+  view_cart_items[i,5] <- length(unlist(view_cart_items[i,2]))
+  view_cart_items[i,6] <- length(unlist(view_cart_items[i,3]))
+  view_cart_items[i,7] <- as.double(view_cart_items[i,4] / view_cart_items[i,5])
+}
+rownames(view_cart_items) <- 1:nrow(view_cart_items)
+colnames(view_cart_items)[4:7] <- c("recom_match","no_of_unique_items_in_cart","no_of_unique_viewed_items","recommendation_performance")
+
+
+
+```
+
+
+# TESTING on a different sample
+
+```{r}
+#Taking a test sample of 100 visitors
+set.seed(400)
+visitor_sample_test <- sample(unique(final_train$visitorid),100)
+final_sample_test <- final_train[final_train$visitorid %in% visitor_sample == TRUE, ]
+
+# Constructing a single table for viewed and items in  cart
+sample_view_cart_test <- final_sample_test[order(final_sample_test[2],final_sample_test[1]),]
+cart_items_test <- sample_view_cart_test[sample_view_cart_test$event == "addtocart", c(1,2,4)]
+cart_items_agg_test <- aggregate(itemid ~ visitorid,data = cart_items_test,function(x) list(unique(x)))
+view_items_agg_test <- aggregate(itemid ~ visitorid,data = final_sample_test,function(x) list(unique(x)))
+view_cart_items_test <- cbind(cart_items_agg_test[1:2],view_items_agg_test[2])
+colnames(view_cart_items_test)[2:3] <- c("cart_items","viewed_items")
+
+
+# Calculating number of recommended items in CART
+
+for (i in 1:nrow(view_cart_items_test)){
+  for (j in 1:length(view_cart_items_test[i,3])){
+    item <- as.character(unlist(view_cart_items_test[i,3][j]))
+    l <- as.numeric(unlist(view_cart_items_test[i,2]))
+    r <- as.vector(as.matrix(similar_prop_train_df[item,1:11 ]))
+    match <- l  %in% r 
+    cnt <- sum(match)
+    if (cnt>0 ){ view_cart_items_test[i,4] <- cnt
+    } else view_cart_items_test[i,4] <- 0
+  }
+}
+
+view_cart_items <- view_cart_items[order(view_cart_items[4],decreasing = TRUE),]
+
+for (i in 1:nrow(view_cart_items_test)){
+  view_cart_items_test[i,5] <- length(unlist(view_cart_items_test[i,2]))
+  view_cart_items_test[i,6] <- length(unlist(view_cart_items_test[i,3]))
+  view_cart_items_test[i,7] <- as.double(view_cart_items_test[i,4] / view_cart_items_test[i,5])
+}
+rownames(view_cart_items_test) <- 1:nrow(view_cart_items_test)
+colnames(view_cart_items_test)[4:7] <- c("recom_match","no_of_unique_items_in_cart","no_of_unique_viewed_items","recommendation_performance")
+
+# Recommendation Performance for a test sample of 100 visitors based on 10 item-based recommendations - 88.5% (# of recommended items in cart / Total # of items in cart)
+cat (sum(view_cart_items_test[4])/ sum(view_cart_items_test[5]))
+
+
+```
+
